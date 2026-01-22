@@ -111,7 +111,8 @@ def generate_topic(
     business_context: str,
     platform: str,
     date: str,
-    business_id: str = None
+    business_id: str = None,
+
 ) -> dict:
     """
     Generates a post topic using Grok.
@@ -126,7 +127,7 @@ def generate_topic(
     filled_prompt = filled_prompt.replace("{{BUSINESS_CONTEXT}}", business_context)
     filled_prompt = filled_prompt.replace("{{PLATFORM}}", platform)
     filled_prompt = filled_prompt.replace("{{DATE}}", date)
-    filled_prompt = filled_prompt.replace("{{RECENT_TOPICS}}", recent_topics(business_id))
+    filled_prompt = filled_prompt.replace("{{RECENT_TOPICS}}", str(recent_topics(business_id,platform)))
 
     try:
         response = call_grok(filled_prompt)
@@ -169,15 +170,13 @@ def embed_topic(text: str) -> np.ndarray:
 # CONTEXT BUILDER 
 # ============================================================
 
-def build_context(business_embedding, topic_embedding, platform, time, day_of_week):
+def build_context(business_embedding, topic_embedding, platform, time):
     """
     Build RL context from embeddings and scheduling info.
-    day_of_week: 0=Monday, 6=Sunday (provided directly, not derived from date)
     """
     return {
         "platform": platform,
         "time_bucket": time,
-        "day_of_week": day_of_week,
         "business_embedding": business_embedding,
         "topic_embedding": topic_embedding
     }
@@ -193,7 +192,6 @@ def generate_prompts(
     topic_embedding,
     platform: str,
     time: str,
-    day_of_week: int,
     topic_text: str,profile_data: dict,
     business_context: str
 ) -> dict:
@@ -201,15 +199,14 @@ def generate_prompts(
     Single execution point between RL and LLMs.
     """
 
-    print(f"🤖 RL Context: Platform={platform}, Time={time}, Day={day_of_week}")
+    print(f"🤖 RL Context: Platform={platform}, Time={time}")
 
     # 1️⃣ Build RL context (using your build_context)
     context = build_context(
         business_embedding=business_embedding,
         topic_embedding=topic_embedding,
         platform=platform,
-        time=time,
-        day_of_week=day_of_week
+        time=time
     )
 
     # 2️⃣ RL decides creative controls

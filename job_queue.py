@@ -145,7 +145,6 @@ def get_action_and_context_from_db(post_id: str, platform: str, profile_id: str)
         context = {
             "platform": platform,
             "time_bucket": action_row.get("time_bucket"),
-            "day_of_week": action_row.get("day_of_week"),
             "business_embedding": business_embedding,
             "topic_embedding": final_topic_embedding
         }
@@ -227,93 +226,233 @@ async def run_job_worker_async():
     await loop.run_in_executor(None, job_worker)
 
 
-async def run_unified_service():
-    """Run both job worker and metrics collection concurrently"""
-    print("🚀 Starting concurrent job processing and metrics collection...")
+def check_and_retry_missed_posts():
+    """Check for missed posts and retry failed ones"""
+    print("🔄 Starting post rechecking process...")
+
+    try:
+        # Get all active business profiles
+        all_business_ids = db.get_all_profile_ids()
+        print(f"📊 Found {len(all_business_ids)} business profiles to check")
+
+        rechecked_count = 0
+
+        for business_id in all_business_ids:
+            try:
+                print(f"\n🏢 Rechecking business: {business_id}")
+
+                # Get connected platforms for this business
+                user_connected_platforms = list(set(db.get_connected_platforms(business_id)))
+                print(f"📱 Business {business_id} has {len(user_connected_platforms)} connected platforms: {user_connected_platforms}")
+
+                for platform in user_connected_platforms:
+                    try:
+                        platform = platform.lower().strip()  # normalize
+
+                        if platform not in ["instagram", "facebook"]:
+                            print(f"❌ Skipping unsupported platform: {platform} for business {business_id}")
+                            continue
+
+                        # Check for posts that should have been created but weren't
+                        missed_posts = check_missed_posts(business_id, platform)
+                        if missed_posts:
+                            print(f"⚠️ Found {len(missed_posts)} missed posts for {business_id} on {platform}")
+                            for post_info in missed_posts:
+                                retry_missed_post(business_id, platform, post_info)
+                                rechecked_count += 1
+
+                        # Check for failed posts that need retrying
+                        failed_posts = check_failed_posts(business_id, platform)
+                        if failed_posts:
+                            print(f"⚠️ Found {len(failed_posts)} failed posts for {business_id} on {platform}")
+                            for post_info in failed_posts:
+                                retry_failed_post(business_id, platform, post_info)
+                                rechecked_count += 1
+
+                    except Exception as e:
+                        print(f"❌ Failed to recheck posts for {business_id} on {platform}: {e}")
+                        continue
+
+            except Exception as e:
+                print(f"❌ Failed to recheck business {business_id}: {e}")
+                continue
+
+        print(f"✅ Post rechecking completed. Processed {rechecked_count} posts")
+
+    except Exception as e:
+        print(f"❌ Critical error in post rechecking: {e}")
+
+
+def check_missed_posts(business_id: str, platform: str) -> list:
+    """Check for posts that should have been created but weren't"""
+    try:
+        # Get today's date
+        today = datetime.now(IST).date()
+
+        # Check if posts exist for today
+        res = db.supabase.table("post_contents").select("post_id").eq("business_id", business_id).eq("platform", platform).eq("post_date", today.isoformat()).execute()
+
+        # If no posts exist for today and business should post today, mark as missed
+        if not res.data and db.should_create_post_today(business_id):
+            return [{"date": today.isoformat(), "reason": "missing_daily_post"}]
+        else:
+            return []
+
+    except Exception as e:
+        print(f"Error checking missed posts for {business_id} on {platform}: {e}")
+        return []
+
+
+def check_failed_posts(business_id: str, platform: str) -> list:
+    """Check for posts that failed during creation or posting"""
+    try:
+        # Look for posts with error status or stuck in generated state too long
+        # Query for posts with error or generated status
+        error_res = (db.supabase.table("post_contents")
+                     .select("post_id, status, created_at")
+                     .eq("business_id", business_id)
+                     .eq("platform", platform)
+                     .eq("status", "error")
+                     .execute())
+
+        generated_res = (db.supabase.table("post_contents")
+                         .select("post_id, status, created_at")
+                         .eq("business_id", business_id)
+                         .eq("platform", platform)
+                         .eq("status", "generated")
+                         .execute())
+
+        # Combine results
+        all_posts = []
+        if error_res.data:
+            all_posts.extend(error_res.data)
+        if generated_res.data:
+            all_posts.extend(generated_res.data)
+
+        res = type('Result', (), {'data': all_posts})()
+
+        failed_posts = []
+        current_time = datetime.now(IST)
+
+        for post in res.data or []:
+            created_at = datetime.fromisoformat(post["created_at"].replace('Z', '+00:00'))
+            if created_at.tzinfo is None:
+                created_at = pytz.utc.localize(created_at)
+            created_at_ist = created_at.astimezone(IST)
+
+            # If post has been in error/generated state for more than 2 hours, consider it failed
+            if (current_time - created_at_ist).total_seconds() > 7200:  # 2 hours
+                failed_posts.append({
+                    "post_id": post["post_id"],
+                    "status": post["status"],
+                    "reason": "stuck_too_long"
+                })
+
+        return failed_posts
+
+    except Exception as e:
+        print(f"Error checking failed posts for {business_id} on {platform}: {e}")
+        return []
+
+
+def retry_missed_post(business_id: str, platform: str, post_info: dict):
+    """Retry creating a missed post"""
+    try:
+        print(f"🔄 Retrying missed post for {business_id} on {platform} (date: {post_info['date']})")
+
+        # Import main module functions dynamically
+        import main
+
+        # Create the missed post
+        main.run_one_post(
+            BUSINESS_ID=business_id,
+            platform=platform,
+        )
+
+        print(f"✅ Successfully retried missed post for {business_id} on {platform}")
+
+    except Exception as e:
+        print(f"❌ Failed to retry missed post for {business_id} on {platform}: {e}")
+
+
+def retry_failed_post(business_id: str, platform: str, post_info: dict):
+    """Retry a failed post"""
+    try:
+        print(f"🔄 Retrying failed post {post_info['post_id']} for {business_id} on {platform}")
+
+        # For now, just mark as needing attention - could implement more sophisticated retry logic
+        # This could involve re-generating content or re-attempting posting
+
+        # Option 1: Delete and recreate the post
+        # Option 2: Just update status to trigger re-processing
+        # For simplicity, let's delete and recreate
+
+        post_id = post_info["post_id"]
+
+        # Delete the failed post (this will cascade to related records)
+        db.supabase.table("post_contents").delete().eq("post_id", post_id).execute()
+
+        # Create a new post to replace it
+        import main
+        main.run_one_post(
+            BUSINESS_ID=business_id,
+            platform=platform,
+        )
+
+        print(f"✅ Successfully retried failed post {post_id} for {business_id} on {platform}")
+
+    except Exception as e:
+        print(f"❌ Failed to retry failed post {post_info['post_id']} for {business_id} on {platform}: {e}")
+
+
+async def run_cron_job_services(duration_seconds: int = 90):
+    """Run job processing and metrics collection for a limited time (suitable for cron jobs)"""
+    print(f"🚀 Starting cron job services for {duration_seconds} seconds...")
 
     # Create tasks for both services
     job_task = asyncio.create_task(run_job_worker_async())
     metrics_task = asyncio.create_task(snaphot_collector.run_continuous_metrics_collection())
 
-    # Wait for both to complete (they run indefinitely until interrupted)
-    await asyncio.gather(job_task, metrics_task, return_exceptions=True)
+    # Wait for the specified duration, then cancel tasks
+    try:
+        await asyncio.wait_for(asyncio.gather(job_task, metrics_task, return_exceptions=True), timeout=duration_seconds)
+    except asyncio.TimeoutError:
+        print(f"⏰ Cron job duration ({duration_seconds}s) reached, stopping services...")
+        # Cancel the tasks
+        job_task.cancel()
+        metrics_task.cancel()
+
+        # Wait for cancellation to complete
+        try:
+            await job_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await metrics_task
+        except asyncio.CancelledError:
+            pass
+
+    print("✅ Cron job services completed")
 
 
 if __name__ == "__main__":
-    """Run unified service (jobs + metrics collection)"""
-    print("🔄 Starting Unified RL Service (Jobs + Metrics)...")
-    print("📋 This will run job processing and metrics collection continuously")
-    print("⚠️  Use Ctrl+C to stop gracefully")
+    """Run cron job services (rechecking + limited job processing)"""
+    print("🔄 Starting Cron Job RL Service...")
+    print("📋 This will run rechecking and process jobs for a limited time")
+    print("⚠️  Designed for cron job execution every 15 minutes")
 
     try:
-        # Always run the scheduled jobs check first
-        print("🔍 Running scheduled jobs check...")
-        from main import check_and_run_scheduled_jobs
-        check_and_run_scheduled_jobs()
+        # Run rechecking to catch missed/failed posts
+        print("🔄 Running post rechecking...")
+        check_and_retry_missed_posts()
 
-        # Check if it's 11pm UTC and run main.py if so (independent of scheduled jobs check)
-        current_utc = datetime.now(pytz.UTC)
-        if current_utc.hour == 23:  # 11pm UTC
-            print("🌙 It's 11pm UTC - Running main.py...")
-            try:
-                # Import main module functions dynamically
-                import main
+        # Run services for a limited time (90 seconds to fit within 15-minute cron cycles)
+        asyncio.run(run_cron_job_services(duration_seconds=90))
 
-                # Get all business profiles and process them (without calling check_and_run_scheduled_jobs again)
-                all_business_ids = db.get_all_profile_ids()
-                print(f"📊 Found {len(all_business_ids)} business profiles to check")
+        print("✅ Cron job cycle completed successfully")
 
-                # Process each business (this replicates main.py's main loop)
-                for business_id in all_business_ids:
-                    try:
-                        print(f"\n🏢 Processing business: {business_id}")
-
-                        # Check if this business should create posts today
-                        if not db.should_create_post_today(business_id):
-                            print(f"⏸️ Skipping business {business_id} — not scheduled for today (IST)")
-                            continue
-
-                        # Get connected platforms for this business
-                        user_connected_platforms = list(set(db.get_connected_platforms(business_id)))
-                        print(f"📱 Business {business_id} has {len(user_connected_platforms)} connected platforms: {user_connected_platforms}")
-
-                        # Create posts for each platform
-                        for platform in user_connected_platforms:
-                            try:
-                                platform = platform.lower().strip()  # normalize
-
-                                if platform not in main.ALLOWED_PLATFORMS:
-                                    print(f"❌ Skipping unsupported platform: {platform} for business {business_id}")
-                                    continue  # skip unsupported platforms
-
-                                print(f"🚀 Creating post for business {business_id} on {platform}")
-
-                                main.run_one_post(
-                                    BUSINESS_ID=business_id,
-                                    platform=platform,
-                                )
-                                print(f"✅ Successfully processed post for {business_id} on {platform}")
-
-                            except Exception as e:
-                                print(f"❌ Failed to create post for {business_id} on {platform}: {e}")
-                                continue  # Continue with other platforms
-
-                    except Exception as e:
-                        print(f"❌ Failed to process business {business_id}: {e}")
-                        continue  # Continue with other businesses
-
-                print("\n✅ Daily post creation process completed for all businesses")
-
-            except Exception as e:
-                print(f"❌ Error running main.py at 11pm UTC: {e}")
-
-        # Run the unified service (both job worker and metrics collection)
-        asyncio.run(run_unified_service())
-
-    except KeyboardInterrupt:
-        print("\n🛑 Unified service stopped by user")
     except Exception as e:
-        print(f"❌ Unified service error: {e}")
+        print(f"❌ Cron job error: {e}")
         raise
 
 

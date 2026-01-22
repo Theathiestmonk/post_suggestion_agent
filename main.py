@@ -37,48 +37,19 @@ from job_queue import queue_reward_calculation_job
 from content_generation import generate_content
 
 # Add imports
-from post_scheduler import run_scheduling_job, run_posting_job
 import time
 from datetime import datetime, timedelta
-
-# Add this function
-def check_and_run_scheduled_jobs():
-    """Check current time and run scheduled jobs if needed"""
-    current_time = datetime.now(IST)
-    current_time_str = current_time.strftime("%H:%M")
-    
-    # Run scheduling job at 8:30 AM IST daily
-    if current_time_str == "0:30":
-        print("🌅 Time is 7:30 AM - Running scheduling job...")
-        try:
-            run_scheduling_job()
-            print("✅ Scheduling job completed")
-        except Exception as e:
-            print(f"❌ Scheduling job failed: {e}")
-
-    # Run posting jobs at scheduled times
-    posting_times = ["03:30", "08:00", "13:30", "16:30"]  # Morning, Afternoon, Evening, Night
-    
-    if current_time_str in posting_times:
-        print(f"🚀 Time is {current_time_str} - Running posting job...")
-        try:
-            run_posting_job()
-            print("✅ Posting job completed")
-        except Exception as e:
-            print(f"❌ Posting job failed: {e}")
-
 
 # MAIN LOOP
 # -------------------------------------------------
 
-def run_one_post(BUSINESS_ID, platform, time=None, day_of_week=None):
+def run_one_post(BUSINESS_ID, platform, time=None):
     # Get user's scheduling preferences if not provided
-    if time is None or day_of_week is None:
+    if time is None:
         scheduling_prefs = db.get_profile_scheduling_prefs(BUSINESS_ID)
         time = time or scheduling_prefs["time_bucket"]
-        day_of_week = day_of_week if day_of_week is not None else scheduling_prefs["day_of_week"]
 
-    print(f"\n🚀 Starting new post cycle for {platform} at {time} (day {day_of_week})")
+    print(f"\n🚀 Starting new post cycle for {platform} at {time}")
     
     date = datetime.now(IST).date().isoformat()
 
@@ -123,7 +94,6 @@ def run_one_post(BUSINESS_ID, platform, time=None, day_of_week=None):
         topic_embedding,
         platform,
         time,
-        day_of_week,
         topic_text,profile_data,
         business_context=profile_data,
     )
@@ -154,7 +124,13 @@ def run_one_post(BUSINESS_ID, platform, time=None, day_of_week=None):
         f"Write a {action['TONE']} caption in {action['INFORMATION_DEPTH']} length with {action['CREATIVITY']} creativity level. The topic is {topic_text}. Make it suitable for {platform}.")
 
     print("🎨 Generating caption and image content...")
-    content_result = generate_content(caption_prompt, image_prompt, profile_data)
+
+    # Extract logo URL from business profile if available
+    logo_url = profile_data.get("logo_url")
+    if logo_url:
+        print(f"🎨 Will overlay logo from: {logo_url}")
+
+    content_result = generate_content(caption_prompt, image_prompt, profile_data, logo_url, business_id)
 
     if content_result["status"] == "success":
         generated_caption = content_result["caption"]
@@ -202,10 +178,9 @@ def run_one_post(BUSINESS_ID, platform, time=None, day_of_week=None):
 ALLOWED_PLATFORMS = {"instagram","facebook"}
 
 if __name__ == "__main__":
-    check_and_run_scheduled_jobs()
     try:
         # Get all business profiles
-        all_business_ids = db.get_all_profile_ids()
+        all_business_ids = ["756f60ad-d7e7-4987-b4cf-df4ecc7d0885"]
         print(f"📊 Found {len(all_business_ids)} business profiles to check")
 
         # Process each business

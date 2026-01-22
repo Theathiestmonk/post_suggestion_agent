@@ -11,7 +11,7 @@ Platform: {{PLATFORM}}
 
 Current date: {{DATE}}
 
-Task: Suggest ONLY one timely and relevant post topic for the specified platform.
+Task: Suggest ONLY one timely(within 7 days of the current date) and relevant post topic for the specified platform.
 
 Output strictly in this format and nothing else:
 
@@ -294,6 +294,7 @@ The image_prompt MUST instruct the model to:
 - Do NOT output instructions like "without text" unless {{COMPOSITION_STYLE}} explicitly requires it
 - If the image could apply to a generic business, it is INVALID
 - DO NOT INCLUDE HASHTAGS IN THE IMAGE
+- DO NOT add any website urls or any type of instagram/facebook handles in the image
 - THE GENERATED IMAGE SHOULD NOT CONTAIN ANY TYPE OF NUDITY OR ANY OTHER INAPPROPRIATE CONTENT(even for humanoid AI entities or digital avatars)
 
 ────────────────────────────────

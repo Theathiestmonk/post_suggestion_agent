@@ -8,10 +8,10 @@ An AI-powered social media content generation system that uses reinforcement lea
 - **Multi-Platform Support**: Instagram, Twitter/X, LinkedIn, Facebook
 - **Trend-Aware Generation**: Creates trendy content based on current social media trends
 - **Business Profile Adaptation**: Tailors content to specific business types and industries
-- **Automated Scheduling & Publishing**: Cron-based system for scheduling and publishing posts
-- **Live Social Media Integration**: Real API integration with all major platforms
+- **Content Generation Only**: Generates high-quality content ready for external posting systems
+- **Daily Content Creation**: Automated daily content generation via cron jobs
 - **Production-Ready**: Rate limiting, error handling, and retry logic
-- **Real-time Optimization**: Continuously improves content performance
+- **Real-time Optimization**: Continuously improves content performance based on engagement data
 
 ## Architecture
 
@@ -22,22 +22,23 @@ An AI-powered social media content generation system that uses reinforcement lea
 - `generate.py`: Prompt generation with trendy/standard modes
 - `db.py`: Supabase database operations
 
-### Post Lifecycle
+### Content Lifecycle
 
-1. **Generate Content**: RL agent selects creative parameters and generates content
-2. **Schedule Posts**: Cron job runs at 5 AM IST, changes status from 'generated' to 'scheduled'
-3. **Publish Content**: Posts are published at their scheduled time, status changes to 'posted'
-4. **Collect Metrics**: Gather engagement data from social media platforms
-5. **Calculate Reward**: Evaluate performance based on platform-specific metrics
+1. **Generate Content**: RL agent selects creative parameters and generates content daily
+2. **Store Content**: Generated content is stored in database for external posting systems
+3. **External Posting**: Separate system takes content and publishes to social media platforms
+4. **Collect Metrics**: Gather engagement data from social media platforms at scheduled intervals
+5. **Calculate Reward**: Evaluate performance 7 days after posting based on platform-specific metrics
 6. **Update Agent**: RL agent learns from feedback to improve future content
 
-### Automated Scheduling System
+### Automated Generation System
 
-The system includes automated cron jobs for content scheduling and publishing:
+The system includes automated cron jobs for content generation and learning:
 
-- **Scheduling Job**: Runs at 5 AM IST daily, finds posts with status 'generated' and schedules them
-- **Publishing Job**: Runs every 15 minutes, publishes scheduled posts at their designated time
-- **Status Tracking**: Posts progress through states: `generated` → `scheduled` → `posted` → reward calculation
+- **Rechecking Job**: Runs every minute to check for missed or failed posts and retry them
+- **Metrics Collection**: Runs continuously, collecting engagement data at 6hr, 24hr, 48hr, 72hr, 168hr intervals
+- **Reward Calculation**: Evaluates performance 7 days after posting and updates RL preferences
+- **Status Tracking**: Content progresses through states: `generated` → external posting → reward calculation
 
 ## Setup
 
@@ -68,48 +69,52 @@ cp env.example .env
 
 4. Configure your Supabase database with the required tables (see Database Schema section below).
 
-5. Test the live posting system:
+5. Test content generation:
 ```bash
-python test_live_posting.py
+# Test content generation for all businesses
+python main.py
+
+# Test reward calculation system
+python job_queue.py
 ```
 
-6. Set up automated scheduling:
+6. Set up automated generation:
 ```bash
-# Linux/macOS
-./setup_cron.sh
-
-# Windows
-setup_cron.bat
+# Set up cron job to run job_queue.py every minute
+# This handles post rechecking + continuous metrics collection
+# Example crontab entry:
+# */15 * * * * cd /path/to/ATSN_RL_FINAL && python job_queue.py
 ```
 
 This will set up:
-- **Scheduling job**: Runs at 5 AM IST daily to schedule generated posts
-- **Publishing job**: Runs every 15 minutes to publish scheduled content
+- **Rechecking job**: Runs every 15 minutes to check for missed/failed posts and retry them
+- **Job processing**: Processes queued RL jobs and metrics collection for ~90 seconds per run
 
 ## 🚀 Going Live - Production Deployment
 
 ### Prerequisites
-- ✅ Valid social media API credentials in `.env`
-- ✅ Active platform connections in `platform_connections` table
-- ✅ Generated content in `post_contents` table
-- ✅ Cron jobs configured
+- ✅ Supabase database configured with required tables
+- ✅ Business profiles created and active
+- ✅ Platform connections configured
+- ✅ Cron job configured to run `job_queue.py` every minute
 
-### Test Live Posting
+### Test Content Generation
 ```bash
-# Test credentials
-python test_live_posting.py
+# Test content generation for all businesses
+python main.py
 
-# Test scheduling (safe - doesn't post)
-python post_scheduler.py schedule
+# Test the job queue system (generation + metrics collection)
+python job_queue.py
 
-# Test actual posting (will post live!)
-python post_scheduler.py post
+# Test reward calculation (run after posts have been published externally)
+# The system will automatically calculate rewards 7 days after posting
 ```
 
 ### Production Monitoring
-- **Logs**: Check `logs/scheduler.log` and `logs/publisher.log`
-- **Database**: Monitor `post_contents` table for status changes
-- **Rate Limits**: System includes automatic retry and rate limit handling
+- **Logs**: Check console output for generation and reward calculation status
+- **Database**: Monitor `post_contents` table for generated content
+- **Metrics**: Check `post_snapshots` table for engagement data collection
+- **Rewards**: Monitor `post_rewards` and `rl_rewards` tables for learning progress
 
 ### Supported Platforms
 - **Instagram**: Image posts via Graph API
@@ -135,14 +140,13 @@ CREATE TABLE rl_preferences (
   id SERIAL PRIMARY KEY,
   platform TEXT NOT NULL,
   time_bucket TEXT NOT NULL,
-  day_of_week INTEGER NOT NULL,
   dimension TEXT NOT NULL,
   action_value TEXT NOT NULL,
   preference_score FLOAT DEFAULT 0.0,
   num_samples INTEGER DEFAULT 0,
   created_at TIMESTAMP DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW(),
-  UNIQUE(platform, time_bucket, day_of_week, dimension, action_value)
+  UNIQUE(platform, time_bucket, dimension, action_value)
 );
 ```
 
@@ -155,17 +159,12 @@ CREATE TABLE post_contents (
   platform TEXT NOT NULL,
   business_id UUID,
   topic TEXT,
-  post_type TEXT,
-  business_context TEXT,
-  business_aesthetic TEXT,
   image_prompt TEXT,
   caption_prompt TEXT,
   generated_caption TEXT,
   generated_image_url TEXT,
-  status TEXT DEFAULT 'generated', -- generated | scheduled | posted | failed | deleted
-  media_id TEXT, -- Social media platform's post/media ID when published
-  post_date DATE, -- Scheduled date for posting
-  post_time TIME, -- Scheduled time for posting
+  status TEXT DEFAULT 'generated', -- generated | deleted (external system sets deleted when post is removed)
+  media_id TEXT, -- Social media platform's post/media ID when published (set by external system)
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -178,7 +177,6 @@ CREATE TABLE rl_actions (
   post_id TEXT NOT NULL,
   platform TEXT NOT NULL,
   time_bucket TEXT,
-  day_of_week INTEGER,
   action JSONB,
   created_at TIMESTAMP DEFAULT NOW()
 );
@@ -245,28 +243,31 @@ Run a single content generation cycle:
 python main.py
 ```
 
-### Manual Scheduling & Publishing
+### Automated Generation & Learning
 
-You can also run the scheduling and publishing jobs manually:
+The system runs automated jobs:
 
 ```bash
-# Schedule generated posts (changes status from 'generated' to 'scheduled')
-python post_scheduler.py schedule
+# Run the complete system (generation + metrics collection + reward calculation)
+python job_queue.py
 
-# Publish scheduled posts (changes status from 'scheduled' to 'posted')
-python post_scheduler.py post
+# Or run content generation manually for all businesses
+python main.py
 ```
 
-### Automated Scheduling
+### Cron Job Setup
 
-The system includes automated cron jobs that run:
+Set up a cron job to run `job_queue.py` every minute:
 
-- **Scheduling job**: At 5 AM IST daily
-- **Publishing job**: Every 15 minutes
+```bash
+# Example crontab entry:
+# */15 * * * * cd /path/to/ATSN_RL_FINAL && python job_queue.py
 
-Set up automated scheduling using the setup scripts:
-- Linux/macOS: `./setup_cron.sh`
-- Windows: `setup_cron.bat`
+# This handles:
+# - Post rechecking for missed/failed posts
+# - Job processing and metrics collection for ~45 seconds per run
+# - Automatic reward calculation 7 days after posting
+```
 
 ## Database Schema
 

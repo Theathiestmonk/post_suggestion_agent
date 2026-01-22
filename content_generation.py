@@ -16,7 +16,10 @@ from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
-from db import SupabaseImageManager
+from db import SupabaseImageManager, supabase
+import requests
+from PIL import Image
+import io
 try:
     # Try to use the newer google.genai package
     import google.genai as genai
@@ -76,6 +79,29 @@ class ContentGenerator:
             print(f"Warning: Could not initialize Supabase image manager: {e}")
             self.image_manager = None
 
+    def fetch_business_logo(self, business_id: str) -> Optional[str]:
+        """
+        Fetch logo URL from business profile in database.
+
+        Args:
+            business_id: The business ID to fetch logo for
+
+        Returns:
+            Logo URL string or None if not found
+        """
+        try:
+            res = supabase.table("profiles").select("logo_url").eq("id", business_id).execute()
+            if res.data and len(res.data) > 0:
+                logo_url = res.data[0].get("logo_url")
+                if logo_url:
+                    print(f"📥 Found logo URL for business {business_id}: {logo_url}")
+                    return logo_url
+            print(f"📭 No logo found for business {business_id}")
+            return None
+        except Exception as e:
+            print(f"❌ Error fetching logo for business {business_id}: {e}")
+            return None
+
     def generate_caption(self, caption_prompt: str) -> str:
         """
         Generate a caption using OpenAI GPT-4o-mini.
@@ -100,12 +126,14 @@ class ContentGenerator:
         except Exception as e:
             raise RuntimeError(f"Failed to generate caption: {e}")
 
-    def generate_image(self, image_prompt: str) -> str:
+    def generate_image(self, image_prompt: str, logo_url: str = None, business_id: str = None) -> str:
         """
-        Generate an image using Gemini.
+        Generate an image using Gemini with optional logo overlay.
 
         Args:
             image_prompt: The prompt to generate the image from
+            logo_url: Optional direct logo URL to overlay
+            business_id: Optional business ID to fetch logo from database
 
         Returns:
             Base64 encoded image data URL or placeholder URL
@@ -113,13 +141,59 @@ class ContentGenerator:
         if not self.gemini_client:
             raise ValueError("Gemini API key not configured")
 
+        # Handle logo functionality
+        final_logo_url = logo_url
+        if business_id and not logo_url:
+            # Fetch logo from database if business_id provided but no direct logo_url
+            final_logo_url = self.fetch_business_logo(business_id)
+
+        logo_image = None
+        if final_logo_url:
+            try:
+                print(f"📥 Downloading logo from: {final_logo_url}")
+                # Download logo image
+                response = requests.get(final_logo_url, timeout=10)
+                response.raise_for_status()
+
+                # Convert to PIL Image for Gemini
+                logo_image = Image.open(io.BytesIO(response.content))
+                print("✅ Logo downloaded and processed successfully")
+
+                # Modify prompt to include logo placement instructions
+                logo_instructions = """
+
+                IMPORTANT LOGO PLACEMENT REQUIREMENTS:
+                - Place the provided logo image in the BOTTOM RIGHT CORNER of the generated image
+                - Make the logo clearly visible and prominent
+                - Scale the logo to take MAXIMUM 6-10% of the total image area
+                - Ensure the logo maintains its aspect ratio and quality
+                - Position it professionally without overlapping important content
+                - The logo should enhance the professional appearance of the image
+
+                """
+                image_prompt += logo_instructions
+                print("🎨 Added logo placement instructions to prompt")
+
+            except Exception as e:
+                print(f"⚠️ Failed to download/process logo: {e}")
+                logo_image = None
 
         try:
             if USE_NEW_PACKAGE:
                 # New google.genai package API
+                if logo_image:
+                    # Include logo image in the request
+                    from google.genai import types
+                    contents = [
+                        image_prompt,
+                        logo_image  # PIL Image object
+                    ]
+                else:
+                    contents = image_prompt
+
                 response = self.gemini_client.models.generate_content(
                     model='gemini-2.5-flash-image-preview',
-                    contents=image_prompt
+                    contents=contents
                 )
 
                 # Handle new package response format
@@ -161,7 +235,15 @@ class ContentGenerator:
 
             else:
                 # Legacy google.generativeai package API
-                response = self.gemini_client.generate_content(image_prompt)
+                if logo_image:
+                    # For legacy API, we need to convert PIL image to the format expected
+                    import google.generativeai as genai
+                    # Convert PIL image to genai.Image format
+                    logo_genai = genai.Image.from_pil(logo_image)
+                    contents = [image_prompt, logo_genai]
+                    response = self.gemini_client.generate_content(contents)
+                else:
+                    response = self.gemini_client.generate_content(image_prompt)
 
                 # Get the generated image data
                 if response.candidates and response.candidates[0].content.parts:
@@ -198,7 +280,7 @@ class ContentGenerator:
             raise RuntimeError(error_msg)
 
 
-    def generate_content(self, caption_prompt: str, image_prompt: str, business_context: dict = None) -> Dict[str, Any]:
+    def generate_content(self, caption_prompt: str, image_prompt: str, business_context: dict = None, logo_url: str = None, business_id: str = None) -> Dict[str, Any]:
         """
         Generate both caption and image from their respective prompts.
 
@@ -219,7 +301,7 @@ class ContentGenerator:
                 image_prompt += f"\n\nBusiness Context: \n\n{formatted_context}"
                 print(f"📋 Appended structured business context to image prompt")
 
-            image_url = self.generate_image(image_prompt)
+            image_url = self.generate_image(image_prompt, logo_url, business_id)
 
             return {
                 "caption": caption,
@@ -296,13 +378,65 @@ def generate_image(image_prompt: str) -> str:
     return generator.generate_image(image_prompt)
 
 
-def generate_content(caption_prompt: str, image_prompt: str, business_context: dict = None) -> Dict[str, Any]:
-    """Generate both caption and image from their prompts."""
+def generate_content(caption_prompt: str, image_prompt: str, business_context: dict = None, logo_url: str = None, business_id: str = None) -> Dict[str, Any]:
+    """Generate both caption and image from their prompts with optional logo overlay."""
     generator = ContentGenerator()
-    return generator.generate_content(caption_prompt, image_prompt, business_context)
+    return generator.generate_content(caption_prompt, image_prompt, business_context, logo_url, business_id)
+
+
+def test_logo_overlay():
+    """Test the logo overlay functionality"""
+    print("🧪 Testing Logo Overlay Functionality in ATSN_RL_FINAL")
+    print("=" * 60)
+
+    # Test image prompt
+    image_prompt = "Create a powerful professional image showing a modern office workspace with a laptop, coffee mug, and business documents on a clean desk. Make it look corporate and successful."
+
+    # Test business ID (you would need to replace this with an actual business ID that has a logo)
+    test_business_id = "your-business-id-here"  # Replace with actual business ID
+
+    generator = ContentGenerator()
+
+    try:
+        print("1️⃣ Testing logo fetch from database...")
+        logo_url = generator.fetch_business_logo(test_business_id)
+        if logo_url:
+            print(f"   ✅ Found logo: {logo_url}")
+        else:
+            print("   ⚠️ No logo found, will use placeholder")
+            logo_url = "https://picsum.photos/200/100?random=logo"
+
+        print("\n2️⃣ Generating image WITH logo overlay...")
+        image_url_with_logo = generator.generate_image(image_prompt, logo_url, test_business_id)
+        print(f"   ✅ Image with logo generated")
+        print(f"   📍 URL: {image_url_with_logo[:100]}...")
+
+        print("\n3️⃣ Testing full content generation with logo...")
+        caption_prompt = "Write an engaging Instagram caption about productivity tips for entrepreneurs, including relevant hashtags."
+
+        result_with_logo = generator.generate_content(
+            caption_prompt,
+            image_prompt,
+            logo_url=logo_url,
+            business_id=test_business_id
+        )
+        print(f"   📝 Caption: {result_with_logo['caption'][:100]}...")
+        print(f"   🖼️ Image with logo: {result_with_logo['image_url'][:100]}...")
+
+        print("\n🎉 Logo overlay functionality test completed!")
+        print("\n📋 Test Results:")
+        print(f"   • Logo URL: {logo_url}")
+        print(f"   • Image with logo: {image_url_with_logo}")
+        print(f"   • Content with logo: {result_with_logo['image_url']}")
+
+    except Exception as e:
+        print(f"❌ Test failed with error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
+    test_logo_overlay()
     # Example usage
     caption_prompt = "Write an engaging Instagram caption about productivity tips for entrepreneurs, including relevant hashtags."
     image_prompt = "Create a professional image showing a laptop with coffee and notebooks, modern office setting."

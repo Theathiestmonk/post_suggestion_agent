@@ -74,13 +74,12 @@ def calculate_platform_engagement(platform: str, metrics: dict) -> float:
 
 # ---------- PREFERENCES ----------
 
-def get_preference(platform, time_bucket, day, dimension, value):
+def get_preference(platform, time_bucket, dimension, value):
     try:
         res = supabase.table("rl_preferences") \
             .select("preference_score") \
             .eq("platform", platform) \
             .eq("time_bucket", time_bucket) \
-            .eq("day_of_week", day) \
             .eq("dimension", dimension) \
             .eq("action_value", value) \
             .execute()
@@ -93,7 +92,7 @@ def get_preference(platform, time_bucket, day, dimension, value):
         return 0.0
 
 
-def update_preference(platform, time_bucket, day, dimension, value, delta):
+def update_preference(platform, time_bucket, dimension, value, delta):
     """
     Update preference scores with increment operations.
 
@@ -107,7 +106,7 @@ def update_preference(platform, time_bucket, day, dimension, value, delta):
 
     Current implementation includes error handling and retry logic as mitigation.
     """
-    print(f"Updating preference: {platform} | {time_bucket} | Day {day} | {dimension}={value} | delta={delta:.6f}")
+    print(f"Updating preference: {platform} | {time_bucket} | {dimension}={value} | delta={delta:.6f}")
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -115,7 +114,6 @@ def update_preference(platform, time_bucket, day, dimension, value, delta):
                 .select("id, preference_score, num_samples") \
                 .eq("platform", platform) \
                 .eq("time_bucket", time_bucket) \
-                .eq("day_of_week", day) \
                 .eq("dimension", dimension) \
                 .eq("action_value", value) \
                 .execute()
@@ -141,7 +139,6 @@ def update_preference(platform, time_bucket, day, dimension, value, delta):
                     supabase.table("rl_preferences").upsert({
                         "platform": platform,
                         "time_bucket": time_bucket,
-                        "day_of_week": day,
                         "dimension": dimension,
                         "action_value": value,
                         "preference_score": delta,
@@ -234,20 +231,20 @@ def mark_post_as_posted(post_id, media_id=None):
 # --------------------------------------------------
 # Recent topics
 # --------------------------------------------------    
-def recent_topics(business_id: str, limit: int = 10) -> List[str]:
+def recent_topics(business_id: str, platform: str, limit: int = 10) -> List[str]:
     """
-    Fetch the most recent topics from post_contents table for a specific business.
+    Fetch the most recent topics from post_contents table for a specific business and platform.
     
     Args:
         business_id: The business/profile ID to get topics for
+        platform: The platform to filter topics by
         limit: Number of recent topics to fetch (default: 10)
     
     Returns:
         List of recent topic strings, ordered by most recent first
     """
     try:
-        res = supabase.table("post_contents").select("topic").eq("business_id", business_id).order("created_at", desc=True).limit(limit).execute()
-        
+        res = supabase.table("post_contents").select("topic").eq("business_id", business_id).eq("platform", platform).order("created_at", desc=True).limit(limit).execute()
         if res.data:
             # Extract topics and filter out None/empty values
             topics = [row["topic"] for row in res.data if row.get("topic")]
@@ -322,9 +319,9 @@ def get_scheduled_posts_ready_to_post():
 def create_post_reward_record(profile_id, post_id, platform, action_id=None):
     """Create initial post reward record when post is published"""
     try:
-        # Set post_created_at to now and eligible_at to 24 hours from now
+        # Set post_created_at to now and eligible_at to 7 days from now
         post_created_at = datetime.now(IST)
-        eligible_at = post_created_at + timedelta(hours=24)
+        eligible_at = post_created_at + timedelta(hours=168)
 
         reward_data = {
             "profile_id": profile_id,
@@ -359,7 +356,6 @@ def insert_action(post_id, platform, context, action):
             "composition_style": action.get("COMPOSITION_STYLE"),
             "visual_style": action.get("VISUAL_STYLE"),
             "time_bucket": context.get("time_bucket"),
-            "day_of_week": context.get("day_of_week"),
             "topic": None,  # Will be set from main.py
             "business_id": None  # Will be set from main.py
         }).execute()
@@ -565,38 +561,27 @@ def get_profile_business_data(profile_id):
 
 
 def get_profile_scheduling_prefs(profile_id):
-    """Fetch user's preferred scheduling day and time from profiles table"""
+    """Fetch user's preferred scheduling time from profiles table"""
     try:
         res = supabase.table("profiles").select(
-            "day_of_week, time_bucket"
+            "time_bucket"
         ).eq("id", profile_id).execute()
 
         if res.data and len(res.data) > 0:
             profile = res.data[0]
             return {
-                "day_of_week": profile.get("day_of_week"),
                 "time_bucket": profile.get("time_bucket")
             }
 
         # Fallback defaults if no data found
         return {
-            "day_of_week": 3,  # Thursday
             "time_bucket": "evening"
         }
     except Exception as e:
         print(f"Error fetching profile scheduling preferences for {profile_id}: {e}")
         return {
-            "day_of_week": 3,  # Thursday
             "time_bucket": "evening"
         }
-
-
-def get_today_day_of_week_ist():
-    """
-    Returns today's day_of_week in IST.
-    Monday = 0, Sunday = 6
-    """
-    return datetime.now(IST).weekday()
 
 
 def get_all_profile_ids():
@@ -620,26 +605,9 @@ def get_all_profile_ids():
 
 def should_create_post_today(profile_id) -> bool:
     """
-    Returns True if today (IST) matches profile.day_of_week
+    Returns True - we now post every day for all businesses
     """
-    # Get today's day of week in IST
-    today_day = get_today_day_of_week_ist()
-
-    # Get profile scheduling preferences
-    scheduling_prefs = get_profile_scheduling_prefs(profile_id)
-
-    # Extract profile day_of_week
-    profile_day = scheduling_prefs.get("day_of_week")
-
-    # Validate profile_day
-    if profile_day is None:
-        return False
-
-    if not isinstance(profile_day, int) or profile_day < 0 or profile_day > 6:
-        return False
-
-    # Return True only if today matches profile day
-    return today_day == profile_day
+    return True
 
 
 def get_post_metrics(post_id, platform):

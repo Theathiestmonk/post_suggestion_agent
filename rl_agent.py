@@ -148,7 +148,6 @@ def select_action(context):
     context = {
       platform,
       time_bucket,
-      day_of_week,
       business_embedding (384),
       topic_embedding (384)
     }
@@ -166,7 +165,6 @@ def select_action(context):
             H = db.get_preference(
                 context["platform"],
                 context["time_bucket"],
-                context["day_of_week"],
                 dim,
                 v
             )
@@ -196,7 +194,6 @@ def update_rl(context, action, ctx_vec, reward, baseline,
         db.update_preference(
             context["platform"],
             context["time_bucket"],
-            context["day_of_week"],
             dim,
             val,
             lr_discrete * advantage

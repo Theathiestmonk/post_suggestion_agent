@@ -53,7 +53,6 @@ create table rl_actions (
 
   -- context (observed, not action)
   time_bucket text,
-  day_of_week int,
 
   topic text,
   business_id uuid,
@@ -126,7 +125,6 @@ create table rl_preferences (
   -- context
   platform text,
   time_bucket text,
-  day_of_week int,
 
   -- action dimension
   dimension text,       -- hook_type, tone, hook_length_pair
@@ -140,7 +138,6 @@ create table rl_preferences (
   unique (
     platform,
     time_bucket,
-    day_of_week,
     dimension,
     action_value
   )
@@ -170,41 +167,6 @@ create table public.post_rewards (
 
   constraint unique_post_reward
     unique (profile_id, post_id, platform)
-);
-create table public.post_snapshots (
-  id uuid primary key default gen_random_uuid(),
-
-  -- ownership
-  profile_id uuid not null
-    references public.profiles (id)
-    on delete cascade,
-
-  post_id text not null,
-  platform text not null,
-
-  -- snapshot identity
-  timeslot_hours int not null, 
-  -- allowed values: 6, 24, 48, 72, 168
-
-  snapshot_at timestamp with time zone not null,
-
-  -- engagement metrics (post-level)
-  likes int default 0,
-  comments int default 0,
-  shares int default 0,
-  saves int default 0,
-  replies int default 0,
-  retweets int default 0,
-  reactions int default 0,
-
-  -- account context at snapshot time
-  follower_count int default 0,
-
-  created_at timestamp with time zone default now(),
-
-  -- prevent duplicate snapshots
-  constraint unique_post_snapshot
-    unique (profile_id, post_id, platform, timeslot_hours)
 );
 create table public.profiles (
   id uuid not null,
