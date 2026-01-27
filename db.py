@@ -406,7 +406,7 @@ def insert_post_snapshot(post_id, platform, metrics, profile_id=None, timeslot_h
 
         # Prepare data according to schema
         snapshot_data = {
-            "profile_id": profile_id ",  # Default business ID
+            "profile_id": profile_id,  # Default business ID
             "post_id": post_id,
             "platform": platform,
             "timeslot_hours": timeslot_hours,
