@@ -630,9 +630,29 @@ def get_all_profile_ids():
 
 def should_create_post_today(profile_id) -> bool:
     """
-    Returns True - we now post every day for all businesses
+    Checks if a post has already been created for today for the given profile.
+    Returns True if no post exists for today, False otherwise.
     """
-    return True
+    try:
+        current_date = datetime.now(IST).date().isoformat()
+        
+        # Query post_contents for any post by this business on this date
+        res = supabase.table("post_contents") \
+            .select("post_id") \
+            .eq("business_id", profile_id) \
+            .eq("post_date", current_date) \
+            .execute()
+            
+        if res.data and len(res.data) > 0:
+            return False  # Already posted today
+            
+        return True  # No post yet today
+        
+    except Exception as e:
+        print(f"Error checking daily eligibility for {profile_id}: {e}")
+        # Default to True to avoid missing posts on DB error, 
+        # but in production you might prefer False to be safe.
+        return True
 
 
 def get_post_metrics(post_id, platform):
